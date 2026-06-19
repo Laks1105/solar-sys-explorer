@@ -1,36 +1,3 @@
-"""
-gesture_server.py — Solar System Explorer Gesture Backend
-===========================================================
-
-Opens your webcam, tracks your hand with MediaPipe, classifies it into one of
-the gestures the frontend understands, and serves the latest result over a
-plain HTTP endpoint that React polls.
-
-    Webcam -> MediaPipe (this script) -> http://localhost:5000/gesture -> React (polling)
-
-RUN:
-    python gesture_server.py
-
-Your webcam light should turn on and you'll see:
-    Backend running at http://localhost:5000/gesture
-
-Stop with Ctrl+C in the terminal — it'll release the camera and free the port
-cleanly before exiting.
-
-GESTURES RECOGNIZED
-    open_palm   - all fingers spread open      -> pan / rotate camera
-    two_finger  - index + middle extended only -> zoom in
-    fist        - all fingers curled           -> zoom out
-    point       - only index finger extended   -> select a planet
-
-CONFIG (edit the constants below if needed):
-    CAMERA_INDEX        - if the wrong camera opens (or none does), try 1 or 2
-    SHOW_PREVIEW        - debug window with landmarks drawn on your hand.
-                           If this freezes/crashes (can happen on some macOS
-                           setups since it runs off the main thread), set False.
-    GESTURE_BUFFER_SIZE - frames averaged before a gesture is reported.
-                           Higher = steadier but a touch more lag.
-"""
 
 import os
 import time
@@ -140,6 +107,11 @@ def classify_gesture(lm):
 # the last few frames, and writes the result into _latest_msg for Flask to
 # serve. The pointer position (used for the `point` gesture) follows your
 # index fingertip.
+#
+# Quitting: pressing 'q' while the preview window has focus sets
+# _stop_event and breaks out of the loop, which falls through to the
+# `finally` block below (camera release) and then to the `finally` block in
+# __main__ (Flask shutdown) — same clean-shutdown path as Ctrl+C.
 def camera_loop():
     global _latest_msg
 
@@ -160,6 +132,8 @@ def camera_loop():
     gesture_buffer = deque(maxlen=GESTURE_BUFFER_SIZE)
 
     print("Gesture loop started — show your hand to the camera")
+    if SHOW_PREVIEW:
+        print("Press 'q' in the preview window to quit (or Ctrl+C in the terminal).")
 
     try:
         while not _stop_event.is_set():
@@ -194,10 +168,16 @@ def camera_loop():
             if SHOW_PREVIEW:
                 cv2.putText(frame, gesture, (20, 40), cv2.FONT_HERSHEY_SIMPLEX,
                             1, (0, 255, 255), 2)
-                # NOTE: imshow must run on the main thread on macOS — this function
-                # is now called directly from __main__, not from a background thread.
-                cv2.imshow("Gesture Control (close anytime, backend keeps running)", frame)
-                cv2.waitKey(1)
+                cv2.putText(frame, "press 'q' to quit", (20, 470), cv2.FONT_HERSHEY_SIMPLEX,
+                            0.6, (200, 200, 200), 1)
+                # NOTE: imshow + waitKey must run on the main thread on macOS —
+                # this function is called directly from __main__, not from a
+                # background thread.
+                cv2.imshow("Gesture Control (press 'q' to quit, closes backend too)", frame)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    print("\n'q' pressed, shutting down...")
+                    _stop_event.set()
+                    break
 
             with _lock:
                 _latest_msg = {"gesture": gesture, "landmarks": lm_list, "pointer": pointer}
@@ -258,7 +238,7 @@ if __name__ == "__main__":
     ensure_model()
     start_flask()
     try:
-        camera_loop()  # blocks here, on the main thread, until Ctrl+C
+        camera_loop()  # blocks here, on the main thread, until Ctrl+C or 'q'
     except KeyboardInterrupt:
         print("\nCtrl+C received, shutting down...")
     finally:
